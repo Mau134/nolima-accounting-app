@@ -9,7 +9,7 @@ APP_NAME = "Nolima Accounting"
 VERSION = __version__
 VENDOR = "Nolima Tech Consultants"
 VENDOR_PHONE = "099 025 2341"
-VENDOR_EMAIL = "info@nolima.mw"
+VENDOR_EMAIL = "info.nolimatechconsulting@gmail.com"
 
 # GitHub repository checked for updates (owner/repo). Releases tagged vX.Y.Z.
 UPDATE_REPO = "/nolima-accounting-app"
