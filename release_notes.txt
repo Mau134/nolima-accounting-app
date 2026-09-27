@@ -1,0 +1,11 @@
+Nolima Accounting 1.3.0
+
+- New invoice and quotation layout, like the lodge's own quotation: logo, Date / Total / Expiration boxes,
+  dates on each line, one TAX line and a TAX SUMMARY showing Ministry of Tourism and MRA together.
+  Upload your logo in Settings > Company.
+- Numbering can continue from your existing numbers (e.g. Quote 1878): Settings > Company.
+- Delete customers, suppliers, items and quotations that have not been used. Records with history
+  can be hidden instead (tick "Show hidden" to see them).
+- Profit is now calculated from expenses: stock bought counts as an expense straight away.
+  Quantities in stock are still tracked. (Settings > Company > How profit is calculated.)
+- VAT default for new companies is 17.5%.
