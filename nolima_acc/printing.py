@@ -302,11 +302,31 @@ def print_statement(books, contact_id, start, end):
     return _open(f"STATEMENT {c['name']}", body)
 
 
+REPORT_CSS = """
+body{font-family:Helvetica,Arial,sans-serif;color:#111;margin:34px 44px;font-size:12.5px}
+.rh{text-align:center;margin-bottom:22px} .rh .co{font-size:15px} .rh .t{font-size:19px;font-weight:bold;margin:6px 0}
+.rh .p{font-size:13px}
+table{width:100%;border-collapse:collapse} th{font-size:11.5px;font-weight:bold;text-align:left;padding:7px 6px;
+border-bottom:1px solid #111} th.r{text-align:right} td{padding:5px 6px} td.r{text-align:right;white-space:nowrap}
+tr.sec td{font-weight:bold;padding-top:12px} td:first-child{min-width:150px} tr.tot td{font-weight:bold;border-top:1px solid #111}
+tr.tot td.r{border-bottom:3px double #111}
+.meta{display:flex;justify-content:space-between;font-size:10.5px;color:#444;border-top:1px solid #ccc;margin-top:28px;
+padding-top:6px}
+@media print{body{margin:12mm 14mm}}
+"""
+
+
 def print_report(books, title, subtitle, headers, rows, money_cols=()):
-    """rows: list of lists; a row may be ('__section__', text) or ('__total__', [...])."""
+    """Reports in the layout the lodge already uses: company, title, period, then Accrual Basis + print time.
+    rows: list of lists; a row may be ('__section__', text) or ('__total__', [...])."""
+    import datetime as _dt
     co = books.company()
     mc = set(money_cols)
-    th = "".join(f"<th class='{'r' if i in mc else ''}'>{_e(h)}</th>" for i, h in enumerate(headers))
+    right = mc | {i for i, h in enumerate(headers) if h and any(
+        isinstance(r, (list, tuple)) and r and r[0] not in ("__section__", "__total__") and i < len(r)
+        and isinstance(r[i], str) and r[i].strip().endswith("%") for r in rows)}
+    th = "".join(f"<th class='{'r' if (i in mc or i in right or (i and h in ('TOTAL', 'Total', 'Quantity'))) else ''}'>"
+                 f"{_e(h)}</th>" for i, h in enumerate(headers))
     out = []
     for r in rows:
         cls = ""
@@ -315,8 +335,21 @@ def print_report(books, title, subtitle, headers, rows, money_cols=()):
             continue
         if r and r[0] == "__total__":
             cls, r = "tot", r[1]
-        cells = "".join(f"<td class='{'r' if i in mc else ''}'>{_m(v) if i in mc and isinstance(v, (int, float)) else _e(v)}</td>"
-                        for i, v in enumerate(r))
+        cells = ""
+        for i, v in enumerate(r):
+            is_num = isinstance(v, (int, float))
+            align = "r" if (i in mc or i in right or (i and headers[i] in ('TOTAL', 'Total', 'Quantity'))) else ""
+            cells += f"<td class='{align}'>{_m(v) if i in mc and is_num else _e(v)}</td>"
         out.append(f"<tr class='{cls}'>{cells}</tr>")
-    body = _header(co, title, _e(subtitle)) + f"<table><tr>{th}</tr>{''.join(out)}</table>"
-    return _open(f"{title} {subtitle}", body)
+    now = _dt.datetime.now()
+    stamp = f"{now:%A}, {now.day} {now:%B %Y %I:%M %p}"
+    body = (f"<div class='rh'><div class='co'>{_e(co['company_name'])}</div><div class='t'>{_e(title)}</div>"
+            f"<div class='p'>{_e(subtitle)}</div></div><table><tr>{th}</tr>{''.join(out)}</table>"
+            f"<div class='meta'><span>Accrual Basis {stamp}</span></div>")
+    doc = (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)} {_e(subtitle)}</title>"
+           f"<style>{REPORT_CSS}</style></head><body>{body}"
+           f"<script>window.onload=()=>setTimeout(()=>window.print(),300)</script></body></html>")
+    path = Path(tempfile.gettempdir()) / f"nolima_report_{abs(hash(title + subtitle))}.html"
+    path.write_text(doc, encoding="utf-8")
+    webbrowser.open(path.as_uri())
+    return path

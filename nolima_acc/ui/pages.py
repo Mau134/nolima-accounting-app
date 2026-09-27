@@ -49,6 +49,9 @@ class Page(ttk.Frame):
             info(self, f"{name} deleted.")
             return True
         except InUse as exc:
+            if table is None:
+                error(self, exc)
+                return False
             if confirm(self, f"{exc}\n\nHide {name} now?", "Cannot delete"):
                 self.books.set_active(table, rid, False)
                 info(self, f"{name} is hidden. Tick 'Show hidden' to see it again.")
@@ -308,11 +311,12 @@ class DocumentsPage(Page):
             cb.pack(side="left")
             cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_docs())
             actions = [("Print", self.print_doc), ("Record payment", self.pay_doc), ("View entry", self.view_entry),
-                       ("Void", self.void_doc)]
+                       ("Void", self.void_doc), ("Delete", self.delete_doc)]
             if sale:
                 actions.insert(2, ("Withholding tax", self.add_wht))
             for text, cmd in actions:
-                ttk.Button(bar, text=text, command=self._safe(cmd)).pack(side="right", padx=3)
+                ttk.Button(bar, text=text, command=self._safe(cmd),
+                           style="Danger.TButton" if text == "Delete" else "TButton").pack(side="right", padx=3)
         self.search, _ = search_bar(t1, self.refresh_docs, extra)
         self.docs = Table(t1, [("num", "Number", 110, "w"), ("date", "Date", 95, "w"), ("due", "Due", 95, "w"),
                                ("c", "Customer" if sale else "Supplier", 240, "w"), ("ref", "Reference", 120, "w"),
@@ -324,6 +328,8 @@ class DocumentsPage(Page):
         nb.add(t2, text="Receipts" if sale else "Payments")
 
         def extra2(bar):
+            ttk.Button(bar, text="Delete", style="Danger.TButton",
+                       command=self._safe(self.delete_payment)).pack(side="right", padx=3)
             ttk.Button(bar, text="Void", command=self._safe(self.void_payment)).pack(side="right", padx=3)
             ttk.Button(bar, text="Print", command=self._safe(self.print_payment)).pack(side="right", padx=3)
         self.psearch, _ = search_bar(t2, self.refresh_pays, extra2)
@@ -476,6 +482,22 @@ class DocumentsPage(Page):
         inv = self.books.invoice(self._doc())
         if confirm(self, f"Void {inv['number']}? A reversing entry will be posted."):
             self.books.void_invoice(inv["id"], "Voided by user")
+            self.app.refresh()
+
+    def delete_doc(self):
+        inv = self.books.invoice(self._doc())
+        if confirm(self, f"Permanently delete {inv['number']} ({inv['contact']}, MWK {money(inv['total'])})?\n\n"
+                         "It is removed from the books and all reports. This cannot be undone. "
+                         "(Use Void instead if you want to keep a record of it.)"):
+            self.books.delete_invoice(inv["id"])
+            self.app.refresh()
+
+    def delete_payment(self):
+        pid = self._pay()
+        p = self.books.one("SELECT * FROM payments WHERE id=?", (pid,))
+        if confirm(self, f"Permanently delete {p['number']} (MWK {money(p['amount'])})?\n\nThe invoices it paid "
+                         "become unpaid again. This cannot be undone."):
+            self.books.delete_payment(pid)
             self.app.refresh()
 
     def _pay(self):
@@ -707,7 +729,8 @@ class AccountingPage(Page):
         nb.add(t1, text="Chart of accounts")
 
         def extra(bar):
-            for text, cmd in [("Opening balance", self.opening), ("Deactivate", self.deactivate),
+            for text, cmd in [("Delete", self.delete_account), ("Opening balance", self.opening),
+                              ("Deactivate", self.deactivate),
                               ("Edit", self.edit_account), ("New account", self.new_account)]:
                 ttk.Button(bar, text=text, command=self._safe(cmd),
                            style="Primary.TButton" if text == "New account" else "TButton").pack(side="right", padx=3)
@@ -722,6 +745,10 @@ class AccountingPage(Page):
         bar.pack(fill="x", pady=(0, 8))
         ttk.Button(bar, text="View lines", command=self._safe(self.view)).pack(side="left")
         ttk.Button(bar, text="Reverse manual journal", command=self._safe(self.reverse)).pack(side="left", padx=6)
+        ttk.Button(bar, text="Delete entry", style="Danger.TButton",
+                   command=self._safe(self.delete_entry)).pack(side="left")
+        ttk.Label(bar, text="Expenses, money received, transfers, opening balances and journals can be deleted here.",
+                  style="CardMuted.TLabel").pack(side="left", padx=10)
         self.jr = Table(t2, [("id", "#", 60, "e"), ("d", "Date", 100, "w"), ("r", "Ref", 110, "w"),
                              ("s", "Source", 100, "w"), ("m", "Narration", 380, "w"), ("a", "Amount", 130, "e"),
                              ("u", "By", 90, "w")], on_double=lambda i: self.view(), money_cols=["a"])
@@ -732,6 +759,7 @@ class AccountingPage(Page):
         bar.pack(fill="x", pady=(0, 8))
         ttk.Button(bar, text="New department", style="Primary.TButton", command=self._safe(self.new_dept)).pack(side="left")
         ttk.Button(bar, text="Rename / deactivate", command=self._safe(self.edit_dept)).pack(side="left", padx=6)
+        ttk.Button(bar, text="Delete", style="Danger.TButton", command=self._safe(self.delete_dept)).pack(side="left")
         self.depts = Table(self.t3, [("n", "Department", 300, "w"), ("a", "Active", 80, "center")])
         self.depts.pack(fill="both", expand=True)
 
@@ -808,6 +836,26 @@ class AccountingPage(Page):
             self.books.reverse_manual_journal(jid)
             self.app.refresh()
 
+    def delete_entry(self):
+        jid = self._jid()
+        e = self.books.one("SELECT * FROM journal_entries WHERE id=?", (jid,))
+        if confirm(self, f"Permanently delete this entry?\n\n{e['date']}  {e['memo']}\n\nThis cannot be undone."):
+            self.books.delete_journal_entry(jid)
+            self.app.refresh()
+
+    def delete_account(self):
+        a = self._acc()
+        if self.delete_or_hide(f"{a['code']} {a['name']}", self.books.delete_account, None, a["id"]):
+            self.refresh()
+
+    def delete_dept(self):
+        i = self.depts.selected()
+        if not i:
+            raise AccError("Select a department first.")
+        d = self.books.one("SELECT * FROM departments WHERE id=?", (int(i),))
+        if self.delete_or_hide(d["name"], self.books.delete_department, None, d["id"]):
+            self.refresh()
+
     def new_dept(self):
         self.books.need_module("departments")
         v = FormDialog(self, "New department", [("name", "Name", "entry")],
@@ -832,7 +880,8 @@ REPORTS = [
     ("Profit and loss", "range"), ("Profit and loss by department", "range"), ("Balance sheet", "asof"),
     ("Trial balance", "asof"), ("General ledger / cash book", "range_account"), ("Debtors aging", "asof"),
     ("Creditors aging", "asof"), ("VAT summary", "range"), ("Customer / supplier statement", "range_contact"),
-    ("Inventory valuation", "none"), ("Sales by customer", "range"), ("Tourism levy summary", "range"),
+    ("Inventory valuation", "none"), ("Sales by customer", "range"), ("Sales by product/service", "range"),
+    ("Tourism levy summary", "range"),
     ("Withholding tax summary", "range"),
 ]
 
@@ -940,7 +989,19 @@ class ReportsPage(Page):
     def _sel_id(self):
         return next((o[0] for o in self.options if o[1] == self.sel.get()), None)
 
+    @staticmethod
+    def _period(s, e):
+        """'August 2026' for a whole month, otherwise '1 August 2026 - 26 September 2026'."""
+        ds, de = date.fromisoformat(s), date.fromisoformat(e)
+        month_end = (date(ds.year + ds.month // 12, ds.month % 12 + 1, 1) - timedelta(days=1))
+        if ds.day == 1 and de == month_end:
+            return ds.strftime("%B %Y")
+        if ds.month == 1 and ds.day == 1 and de.month == 12 and de.day == 31 and ds.year == de.year:
+            return f"January - December {ds.year}"
+        return f"{ds.day} {ds:%B %Y} - {de.day} {de:%B %Y}"
+
     def run(self):
+        self.title_override = None
         if not (valid_date(self.start.get()) and valid_date(self.end.get())):
             raise AccError("Dates must be in the format YYYY-MM-DD.")
         s, e, b = self.start.get(), self.end.get(), self.books
@@ -1001,12 +1062,24 @@ class ReportsPage(Page):
             rows.append(("__total__", ["Total"] + [ag["totals"][k] for k in ag["buckets"] + ["Total"]]))
             sub = f"As at {e} (days past due)"
         elif name == "VAT summary":
-            v = b.vat_summary(s, e)
-            headers, money_idx = ["Item", "Amount"], [1]
-            rows = [["Sales (net of VAT)", v["sales_net"]], ["Output VAT charged", v["output_vat"]],
-                    ["Purchases (net of VAT)", v["purchases_net"]], ["Input VAT claimable", v["input_vat"]],
-                    ("__total__", ["Net VAT payable / (refundable)", v["net_vat"]])]
-            sub = f"{s} to {e} \u00b7 VAT rate {b.vat_rate:g}%"
+            t = b.tax_liability(s, e)
+            headers, money_idx = ["Tax agency", "Tax jurisdiction", "Tax rate", "Net amount", "VAT amount"], [3, 4]
+            rows = []
+            agencies = []
+            for r in t["rows"]:
+                if r["agency"] not in agencies:
+                    agencies.append(r["agency"])
+            for ag in agencies:
+                grp = [r for r in t["rows"] if r["agency"] == ag]
+                rows.append(("__section__", ag))
+                rows += [[ag, r["name"], "" if r["rate"] is None else f"{r['rate']:.2f}%", r["net"], r["tax"]]
+                         for r in grp]
+                rows.append(("__total__", ["", "", "", round(sum(r["net"] for r in grp), 2),
+                                           round(sum(r["tax"] for r in grp), 2)]))
+            rows.append(("__total__", ["TOTAL", "", "", t["total_net"], t["total_tax"]]))
+            rows.append(["VAT payable to MRA (sales VAT less purchase VAT)", "", "", "", t["vat_payable"]])
+            sub = self._period(s, e)
+            self.title_override = "Tax Liability Report"
         elif name == "Customer / supplier statement":
             cid = self._sel_id()
             if not cid:
@@ -1025,17 +1098,17 @@ class ReportsPage(Page):
             rows.append(("__total__", ["", "Total stock value", "", "", "", iv["total"]]))
             sub = f"As at {date.today().isoformat()}"
         elif name == "Tourism levy summary":
-            t = b.tourism_summary(s, e)
-            headers, money_idx = ["Month", "Documents", "Sales subject to levy", "Levy charged", "Levy paid"], [2, 3, 4]
-            rows = [[date.fromisoformat(r["month"] + "-01").strftime("%B %Y"), r["docs"], r["base"], r["levy"],
-                     r["paid"]] for r in t["rows"]]
-            rows.append(("__total__", ["Total", sum(r["docs"] for r in t["rows"]), t["total_base"], t["total_levy"],
-                                       t["total_paid"]]))
-            if t["departments"]:
-                rows.append(("__section__", "By department"))
-                rows += [[d["department"], "", d["base"], d["levy"], ""] for d in t["departments"]]
-            rows.append(("__total__", [f"Levy owed to the Ministry of Tourism at {e}", "", "", t["owed"], ""]))
-            sub = f"{s} to {e} \u00b7 levy rate {t['rate']:g}%"
+            t = b.tourism_return(s, e)
+            headers, money_idx = ["", "", "TOTAL"], [2]
+            rows = []
+            for no, text, amt in t["lines"]:
+                show = "" if (amt == 0 and no in (11, 19, 21, 18)) else amt
+                if no in (17, 20, 22):
+                    rows.append(("__total__", [str(no), text, f"MK{money(amt)}"]))
+                else:
+                    rows.append([str(no), text, show])
+            sub = self._period(s, e)
+            self.title_override = "Ministry of Tourism - Tax Summary Report"
         elif name == "Withholding tax summary":
             w = b.wht_summary(s, e)
             headers, money_idx = ["Name", "Payments", "Amount settled", "Withholding tax"], [2, 3]
@@ -1049,18 +1122,39 @@ class ReportsPage(Page):
             rows.append(("__total__", ["Total certificates due", "", "", w["certificates_total"]]))
             sub = f"{s} to {e} \u00b7 financial year {w['fy'][0]} to {w['fy'][1]}"
         elif name == "Sales by customer":
-            data = b.q("SELECT c.name, COUNT(*) n, SUM(i.subtotal) net, SUM(i.vat) vat, SUM(i.total) tot "
-                       "FROM invoices i JOIN contacts c ON c.id=i.contact_id WHERE i.kind='sale' AND i.status<>'void' "
-                       "AND i.date BETWEEN ? AND ? GROUP BY c.id ORDER BY tot DESC", (s, e))
-            headers, money_idx = ["Customer", "Invoices", "Net", "VAT", "Total"], [2, 3, 4]
-            rows = [[r["name"], r["n"], r["net"], r["vat"], r["tot"]] for r in data]
-            rows.append(("__total__", ["Total", sum(r["n"] for r in data), sum(r["net"] for r in data),
-                                       sum(r["vat"] for r in data), sum(r["tot"] for r in data)]))
-            sub = f"{s} to {e}"
+            data = b.q("SELECT c.name, SUM(i.subtotal) net FROM invoices i JOIN contacts c ON c.id=i.contact_id "
+                       "WHERE i.kind='sale' AND i.status<>'void' AND i.date BETWEEN ? AND ? GROUP BY c.id "
+                       "ORDER BY c.name", (s, e))
+            headers, money_idx = ["", "Total"], [1]
+            rows = [[r["name"], r["net"]] for r in data]
+            rows.append(("__total__", ["TOTAL", f"MK{money(sum(r['net'] for r in data))}"]))
+            sub = self._period(s, e)
+            self.title_override = "Sales by Customer Summary"
+        elif name == "Sales by product/service":
+            t = b.sales_by_product(s, e)
+            headers = ["", "Quantity", "Amount", "% of sales", "Avg. price", "COS", "Avg. COS", "Gross margin",
+                       "Gross margin %"]
+            money_idx = [2, 4, 5, 6, 7]
+            tot = t["total"] or 1
+            rows = []
+
+            def line(name, qty, amt, cos):
+                gm = amt - cos
+                return [name, f"{qty:,.2f}", amt, f"{amt * 100 / tot:.2f} %", amt / qty if qty else 0, cos,
+                        cos / qty if qty else 0, gm, f"{gm * 100 / amt:.2f} %" if amt else ""]
+            for grp, items in t["groups"].items():
+                rows.append(("__section__", grp))
+                rows += [line("   " + x["name"], x["qty"], x["amount"], x["cos"]) for x in items]
+                q, a_, c_ = sum(x["qty"] for x in items), sum(x["amount"] for x in items), sum(x["cos"] for x in items)
+                rows.append(("__total__", line(f"Total for {grp}", q, round(a_, 2), round(c_, 2))))
+            rows.append(("__total__", line("TOTAL", t["qty"], t["total"], t["cos"])))
+            sub = self._period(s, e)
+            self.title_override = "Sales by Product/Service Summary"
         else:
             return
-        self.output = (name, sub, headers, rows, money_idx)
+        self.output = (self.title_override or name, sub, headers, rows, money_idx)
         self._render()
+        self.title_override = None
 
     def _render(self):
         name, sub, headers, rows, money_idx = self.output
@@ -1178,6 +1272,8 @@ class SettingsPage(Page):
         bar.pack(fill="x", pady=(0, 8))
         ttk.Button(bar, text="New user", style="Primary.TButton", command=self._safe(self.new_user)).pack(side="left")
         ttk.Button(bar, text="Edit user", command=self._safe(self.edit_user)).pack(side="left", padx=6)
+        ttk.Button(bar, text="Delete user", style="Danger.TButton",
+                   command=self._safe(self.delete_user)).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="Change my password", command=self._safe(self.my_password)).pack(side="left")
         self.user_lbl = ttk.Label(bar, text="", style="CardMuted.TLabel")
         self.user_lbl.pack(side="right")
@@ -1394,6 +1490,15 @@ class SettingsPage(Page):
             ("active", "Active", "check", None, u["active"]), ("pw", "New password (optional)", "password")],
             lambda v: self.books.update_user(u["id"], v["role"], v["full_name"], v["active"], v["pw"] or None)).show()
         if v:
+            self.refresh()
+
+    def delete_user(self):
+        i = self.users.selected()
+        if not i:
+            raise AccError("Select a user first.")
+        u = self.books.one("SELECT * FROM users WHERE id=?", (int(i),))
+        if confirm(self, f"Delete the login '{u['username']}'? Their past work stays in the books and audit trail."):
+            self.books.delete_user(u["id"])
             self.refresh()
 
     def my_password(self):

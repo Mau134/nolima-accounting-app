@@ -1,4 +1,4 @@
-# Nolima Accounting 1.3
+# Nolima Accounting 1.4
 
 ## Default login
 
@@ -35,7 +35,11 @@ Prices are always entered before VAT and levy. Documents print up to three banks
 (Settings > Bank details). Invoices and quotations follow the lodge's own layout: logo, date / total / due-date
 boxes, line dates, one TAX line and a TAX SUMMARY (Ministry of Tourism and MRA). Numbering can continue from
 existing numbers (Settings > Company: blank prefix and "next number", e.g. 1878). Unused customers,
-suppliers, items and quotations can be deleted; used ones can be hidden.
+suppliers, items and quotations can be deleted; used ones can be hidden. Invoices, bills, quotations, receipts,
+payments, expenses, transfers, journals, accounts, departments and users can also be deleted (Administrator and
+Accountant only; every deletion is written to the audit trail). Tax reports follow the lodge's QuickBooks layouts:
+Tax Liability Report (VAT summary), Ministry of Tourism - Tax Summary Report, Sales by Customer Summary and
+Sales by Product/Service Summary.
 
 Company files from earlier versions are upgraded automatically when opened: the new accounts, settings and item codes
 are added and nothing existing is changed.
@@ -65,7 +69,7 @@ are added and nothing existing is changed.
    - It creates your signing key in `%USERPROFILE%\NolimaLicenseVault\` and writes the matching
      public key into `nolima_acc/license_pubkey.py`.
    - **Back up the vault folder** (flash disk + cloud). Lose it and you cannot renew existing customers.
-3. Build the installer: double-click `build\build_windows.bat` → `Output\NolimaAccounting-Setup-1.3.0.exe`
+3. Build the installer: double-click `build\build_windows.bat` → `Output\NolimaAccounting-Setup-1.4.0.exe`
    (or let GitHub build it; see **INSTALL.md**, which also covers installing at customers and moving to a new PC)
 
 Commit `license_pubkey.py` to GitHub; never commit the vault folder.

@@ -362,6 +362,72 @@ def test_profit_from_expenses_delete_and_numbering():
     assert abs(tb["total_debit"] - tb["total_credit"]) < 0.01
 
 
+def test_delete_documents_and_tax_reports():
+    from nolima_acc.services import InUse
+    b = new_books(levy=1, method="cogs")
+    b.set_setting("vat_rate", 17.5)
+    cust = b.save_contact("customer", "Ministry of Health")
+    sup = b.save_contact("supplier", "Carlsberg")
+    bank = acc(b, "1010")
+    beer = b.save_item("Beer", "stock", sale_price=2500, income_account_id=acc(b, "4020"),
+                       expense_account_id=acc(b, "5020"))
+    bill = b.create_invoice("bill", sup, "2026-08-02", [{"item_id": beer, "qty": 50, "unit_price": 1000, "vat_rate": 0}])
+    inv = b.create_invoice("sale", cust, "2026-08-10",
+                           [{"account_id": acc(b, "4030"), "qty": 1, "unit_price": 22071974.68, "vat_rate": 17.5},
+                            {"item_id": beer, "qty": 10, "unit_price": 2500, "vat_rate": 17.5}], wht=1000)
+    pid = b.record_payment("receipt", cust, "2026-08-20", bank, 5000, {inv: 5000})
+    # the tax reports in the lodge's format
+    t = b.tax_liability("2026-08-01", "2026-08-31")
+    names = [r["name"] for r in t["rows"]]
+    assert names[:2] == ["Tourism Levy 1% (Sales)", "VAT 17.5% (Sales)"] and "NO TAX PURCHASE" in names
+    tr = {no: v for no, _, v in b.tourism_return("2026-08-01", "2026-08-31")["lines"]}
+    assert tr[1] == round((22071974.68 + 25000) * 0.01, 2) and tr[22] == tr[1]
+    b.record_expense("2026-08-31", bank, [{"account_id": b.account_by_subtype("tourism_levy")["id"],
+                                            "amount": 100000, "vat_rate": 0}], payee="Ministry of Tourism")
+    tr = {no: v for no, _, v in b.tourism_return("2026-08-01", "2026-08-31")["lines"]}
+    assert tr[18] == 100000 and tr[22] == round(tr[1] - 100000, 2)
+    sp = b.sales_by_product("2026-08-01", "2026-08-31")
+    assert round(sp["total"], 2) == round(22071974.68 + 25000, 2)
+    # an invoice with a payment cannot be deleted until the payment is deleted
+    try:
+        b.delete_invoice(inv); assert False
+    except AccError:
+        pass
+    b.delete_payment(pid)
+    assert b.invoice(inv)["amount_paid"] == 1000  # only the WHT remains
+    b.delete_invoice(inv)
+    assert b.one("SELECT qty_on_hand FROM items WHERE id=?", (beer,))[0] == 50   # stock restored
+    assert b.balance(b.account_by_subtype("wht_receivable")["id"]) == 0
+    assert b.balance(acc(b, "4030")) == 0
+    # quotations: even an invoiced one can be deleted; the invoice stays
+    q = b.create_quote(cust, "2026-08-11", [{"account_id": acc(b, "4000"), "qty": 1, "unit_price": 100, "vat_rate": 0}])
+    inv2 = b.convert_quote(q, "2026-08-12")
+    b.delete_quote(q)
+    assert b.invoice(inv2)
+    # expenses / journals, accounts, users
+    eid = b.record_expense("2026-08-15", bank, [{"account_id": acc(b, "6110"), "amount": 5000, "vat_rate": 0}],
+                           payee="ESCOM")
+    b.delete_journal_entry(eid)
+    assert b.balance(acc(b, "6110")) == 0
+    try:
+        b.delete_journal_entry(b.invoice(inv2)["entry_id"]); assert False
+    except AccError:
+        pass
+    new_acc = b.save_account("6999", "Test account", "expense")
+    b.delete_account(new_acc)
+    try:
+        b.delete_account(acc(b, "1010")); assert False
+    except AccError:
+        pass
+    uid = b.create_user("temp", "pass1234", "Viewer")
+    b.delete_user(uid)
+    b.delete_invoice(bill)
+    assert b.one("SELECT qty_on_hand FROM items WHERE id=?", (beer,))[0] == 0
+    tb = b.trial_balance()
+    assert abs(tb["total_debit"] - tb["total_credit"]) < 0.01
+    assert b.balance_sheet("2026-12-31")["balanced"]
+
+
 def test_upgrade_old_company_file():
     """A version-1.0 company file opens, gains the new accounts, settings and item codes."""
     import sqlite3

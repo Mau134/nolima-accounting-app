@@ -1,11 +1,12 @@
-Nolima Accounting 1.3.0
+Nolima Accounting 1.4.0
 
-- New invoice and quotation layout, like the lodge's own quotation: logo, Date / Total / Expiration boxes,
-  dates on each line, one TAX line and a TAX SUMMARY showing Ministry of Tourism and MRA together.
-  Upload your logo in Settings > Company.
-- Numbering can continue from your existing numbers (e.g. Quote 1878): Settings > Company.
-- Delete customers, suppliers, items and quotations that have not been used. Records with history
-  can be hidden instead (tick "Show hidden" to see them).
-- Profit is now calculated from expenses: stock bought counts as an expense straight away.
-  Quantities in stock are still tracked. (Settings > Company > How profit is calculated.)
-- VAT default for new companies is 17.5%.
+- Delete: invoices, supplier bills, quotations (including ones already invoiced), receipts, payments,
+  expenses, money received, transfers, journals, accounts, departments and users. Deleting an invoice also
+  removes its accounting entries and puts the stock back. Invoices with payments: delete the payment first.
+  Only Administrators and Accountants can delete; every deletion is recorded in the audit trail.
+- VAT summary now prints as a Tax Liability Report: tax agency, tax jurisdiction, rate, net amount and tax
+  (Ministry of Tourism levy, MRA VAT on sales and purchases, no-tax purchases) plus the VAT payable to MRA.
+- Tourism levy summary now prints as the Ministry of Tourism - Tax Summary Report (lines 9, 10, 1, 11, 17,
+  19, 20, 21, 18, 22).
+- New report: Sales by Product/Service Summary. Sales by Customer Summary in the same style.
+- All reports print with the company name, report title, period (e.g. "August 2026") and Accrual Basis date.

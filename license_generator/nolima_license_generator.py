@@ -157,7 +157,7 @@ def message_text(customer, meta, key):
             f"({meta['plan']} package, {'unlimited' if not meta['users'] else meta['users']} users) is below. "
             f"It is valid until {meta['expires']:%d %B %Y}.\n\nIn Nolima Accounting go to Settings > Licence > "
             f"Enter renewal key, paste the key and click Apply.\n\n{key}\n\n"
-            f"Nolima Tech Consultants \u00b7 099 025 2341 \u00b7 info@nolima.mw")
+            f"Nolima Tech Consultants \u00b7 099 025 2341 \u00b7 info.nolimatechconsulting@gmail.com")
 
 
 # ---------------------------------------------------------------- GUI

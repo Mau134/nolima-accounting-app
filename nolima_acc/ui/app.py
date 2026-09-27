@@ -482,8 +482,12 @@ class App:
         from .. import updater
         try:
             found = updater.check()
+        except updater.NotPublished as exc:
+            info(self.root, f"You have version {C.VERSION}.\n\n{exc}\nNo action is needed; the program checks "
+                            "again automatically.")
+            return
         except updater.UpdateError as exc:
-            error(self.root, exc)
+            error(self.root, f"{exc}\n\nCheck the internet connection and try again.")
             return
         if found:
             self._offer_update(found, manual=True)

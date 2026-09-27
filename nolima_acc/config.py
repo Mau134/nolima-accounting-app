@@ -1,4 +1,4 @@
-﻿"""Application-wide configuration: branding, paths and constants."""
+"""Application-wide configuration: branding, paths and constants."""
 import os
 import sys
 from pathlib import Path
@@ -12,7 +12,7 @@ VENDOR_PHONE = "099 025 2341"
 VENDOR_EMAIL = "info.nolimatechconsulting@gmail.com"
 
 # GitHub repository checked for updates (owner/repo). Releases tagged vX.Y.Z.
-UPDATE_REPO = "/nolima-accounting-app"
+UPDATE_REPO = "Mau134/nolima-accounting"
 # Optional: full URL of update.json on your own website (its signature must be at the same URL + ".sig").
 # Leave as None to use the latest GitHub release of UPDATE_REPO.
 UPDATE_FEED_URL = None

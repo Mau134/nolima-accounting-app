@@ -33,6 +33,10 @@ class UpdateError(Exception):
     pass
 
 
+class NotPublished(UpdateError):
+    """Nothing to install: no release yet, or the update location is not visible."""
+
+
 @dataclass
 class UpdateInfo:
     version: str
@@ -66,7 +70,19 @@ def _feed():
     """Return the (manifest_url, signature_url) pair."""
     if C.UPDATE_FEED_URL:
         return C.UPDATE_FEED_URL, C.UPDATE_FEED_URL + ".sig"
-    data = json.loads(_get(f"https://api.github.com/repos/{C.UPDATE_REPO}/releases/latest").decode())
+    try:
+        data = json.loads(_get(f"https://api.github.com/repos/{C.UPDATE_REPO}/releases/latest").decode())
+    except UpdateError as exc:
+        if "404" not in str(exc):
+            raise
+        # tell apart "no release yet" from "repository missing or private"
+        try:
+            _get(f"https://api.github.com/repos/{C.UPDATE_REPO}")
+        except UpdateError as exc2:
+            if "404" in str(exc2):
+                raise NotPublished(f"The update location github.com/{C.UPDATE_REPO} was not found or is private.")
+            raise
+        raise NotPublished("No updates have been published yet.")
     assets = {a.get("name"): a.get("browser_download_url") for a in data.get("assets", [])}
     if MANIFEST not in assets or SIGNATURE not in assets:
         raise UpdateError("The latest release has no signed update manifest.")

@@ -578,12 +578,129 @@ class Books:
 
     def delete_quote(self, qid):
         self._require_delete()
-        q = self.quote(qid)
-        if q["status"] == "invoiced":
-            raise AccError("This quotation has been turned into an invoice and cannot be deleted.")
+        q = self.quote(qid)  # any quotation can be deleted; an invoice made from it is kept
         self.conn.execute("DELETE FROM quote_lines WHERE quote_id=?", (qid,))
         self.conn.execute("DELETE FROM quotes WHERE id=?", (qid,))
         self.audit("delete", "quote", qid, q["number"])
+        self.conn.commit()
+
+    # ---------------------------------------------------------------- permanent deletion of transactions
+    def _delete_entries(self, entry_ids):
+        """Remove journal entries (and any reversals of them) completely."""
+        ids = [e for e in entry_ids if e]
+        seen = set()
+        while ids:
+            eid = ids.pop()
+            if eid in seen:
+                continue
+            seen.add(eid)
+            e = self.one("SELECT * FROM journal_entries WHERE id=?", (eid,))
+            if not e:
+                continue
+            self.check_period(e["date"])
+            if self.one("SELECT 1 FROM journal_lines WHERE entry_id=? AND rec_id IS NOT NULL", (eid,)):
+                raise AccError(f"Entry {e['ref'] or eid} is part of a bank reconciliation and cannot be deleted.")
+            ids += [r["id"] for r in self.q("SELECT id FROM journal_entries WHERE source_type='reversal' AND "
+                                              "(source_id=? OR reversal_of=?)", (eid, eid))]
+        for eid in seen:
+            self.conn.execute("DELETE FROM journal_lines WHERE entry_id=?", (eid,))
+            self.conn.execute("DELETE FROM journal_entries WHERE id=?", (eid,))
+
+    def delete_invoice(self, inv_id):
+        """Delete an invoice or bill completely (lines, accounting entries, stock movements).
+        Receipts or payments applied to it must be deleted first."""
+        self._require_delete()
+        inv = self.one("SELECT * FROM invoices WHERE id=?", (inv_id,))
+        if not inv:
+            raise AccError("Not found.")
+        live = self.q("SELECT p.number FROM allocations a JOIN payments p ON p.id=a.payment_id "
+                      "WHERE a.invoice_id=? AND p.status<>'void'", (inv_id,))
+        if live:
+            raise AccError(f"{inv['number']} has payments applied ({', '.join(r['number'] for r in live)}). "
+                           "Delete those receipts/payments first, then delete the document.")
+        entries = [inv["entry_id"]] + [r["id"] for r in self.q(
+            "SELECT id FROM journal_entries WHERE source_type='wht' AND source_id=?", (inv_id,))]
+        self._delete_entries(entries)
+        for m in self.q("SELECT * FROM stock_moves WHERE source_id=? AND source_type IN ('sale','bill','void')",
+                        (inv_id,)):
+            self.conn.execute("UPDATE items SET qty_on_hand=qty_on_hand-? WHERE id=?", (m["qty"], m["item_id"]))
+            self.conn.execute("DELETE FROM stock_moves WHERE id=?", (m["id"],))
+        self.conn.execute("DELETE FROM allocations WHERE invoice_id=?", (inv_id,))
+        self.conn.execute("DELETE FROM invoice_lines WHERE invoice_id=?", (inv_id,))
+        self.conn.execute("UPDATE quotes SET status='accepted', invoice_id=NULL WHERE invoice_id=?", (inv_id,))
+        self.conn.execute("DELETE FROM invoices WHERE id=?", (inv_id,))
+        self.audit("delete", inv["kind"], inv_id, f"{inv['number']} {inv['total']:,.2f} {inv['date']}")
+        self.conn.commit()
+
+    def delete_payment(self, payment_id):
+        """Delete a receipt or supplier payment; the invoices it paid become unpaid again."""
+        self._require_delete()
+        p = self.one("SELECT * FROM payments WHERE id=?", (payment_id,))
+        if not p:
+            raise AccError("Not found.")
+        self._delete_entries([p["entry_id"]])
+        if p["status"] != "void":
+            for a in self.q("SELECT * FROM allocations WHERE payment_id=?", (payment_id,)):
+                self.conn.execute("UPDATE invoices SET amount_paid=amount_paid-? WHERE id=?",
+                                  (a["amount"], a["invoice_id"]))
+                self._refresh_status(a["invoice_id"])
+        self.conn.execute("DELETE FROM allocations WHERE payment_id=?", (payment_id,))
+        self.conn.execute("DELETE FROM payments WHERE id=?", (payment_id,))
+        self.audit("delete", p["kind"], payment_id, f"{p['number']} {p['amount']:,.2f} {p['date']}")
+        self.conn.commit()
+
+    DELETABLE_ENTRIES = ("manual", "expense", "other_receipt", "transfer", "opening", "stock_adjust")
+
+    def delete_journal_entry(self, entry_id):
+        """Delete an expense, money received, transfer, opening balance, stock adjustment or manual journal."""
+        self._require_delete()
+        e = self.one("SELECT * FROM journal_entries WHERE id=?", (entry_id,))
+        if not e:
+            raise AccError("Not found.")
+        if e["source_type"] not in self.DELETABLE_ENTRIES:
+            where = {"invoice": "Sales", "bill": "Purchases", "receipt": "Sales > Receipts",
+                     "payment": "Purchases > Payments", "wht": "the invoice"}.get(e["source_type"])
+            raise AccError(f"This entry belongs to a document; delete it from {where}." if where else
+                           "This kind of entry cannot be deleted.")
+        if e["source_type"] == "stock_adjust":
+            for m in self.q("SELECT * FROM stock_moves WHERE source_type='adjust' AND source_id=?", (entry_id,)):
+                self.conn.execute("UPDATE items SET qty_on_hand=qty_on_hand-? WHERE id=?", (m["qty"], m["item_id"]))
+                self.conn.execute("DELETE FROM stock_moves WHERE id=?", (m["id"],))
+        self._delete_entries([entry_id])
+        self.audit("delete", "journal", entry_id, f"{e['source_type']} {e['date']} {e['memo']}")
+        self.conn.commit()
+
+    def delete_department(self, dept_id):
+        self._require_delete()
+        if self.one("SELECT 1 FROM journal_lines WHERE department_id=?", (dept_id,)) or \
+                self.one("SELECT 1 FROM invoice_lines WHERE department_id=?", (dept_id,)):
+            raise InUse("This department has transactions. It can be hidden (made inactive) instead.")
+        self.conn.execute("DELETE FROM departments WHERE id=?", (dept_id,))
+        self.conn.commit()
+
+    def delete_account(self, account_id):
+        self._require_delete()
+        a = self.one("SELECT * FROM accounts WHERE id=?", (account_id,))
+        if a["system"]:
+            raise AccError("This account is used by the program itself and cannot be deleted.")
+        if self.one("SELECT 1 FROM journal_lines WHERE account_id=?", (account_id,)) or \
+                self.one("SELECT 1 FROM items WHERE income_account_id=? OR expense_account_id=?",
+                         (account_id, account_id)):
+            raise InUse(f"{a['name']} has transactions or is used by items. It can be hidden (deactivated) instead.")
+        self.conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+        self.audit("delete", "account", account_id, f"{a['code']} {a['name']}")
+        self.conn.commit()
+
+    def delete_user(self, uid):
+        self.require("users")
+        u = self.one("SELECT * FROM users WHERE id=?", (uid,))
+        if self.user and u["id"] == self.user["id"]:
+            raise AccError("You cannot delete yourself.")
+        if u["role"] == "Administrator" and self.val(
+                "SELECT COUNT(*) FROM users WHERE role='Administrator' AND active=1 AND id<>?", (uid,), 0) < 1:
+            raise AccError("At least one active Administrator is required.")
+        self.conn.execute("DELETE FROM users WHERE id=?", (uid,))
+        self.audit("delete", "user", uid, u["username"])
         self.conn.commit()
 
     def set_active(self, table, rid, active):
@@ -1436,6 +1553,101 @@ class Books:
                                 "AND date BETWEEN ? AND ?", (start, end), 0))
         return {"sales_net": sales, "purchases_net": purchases, "output_vat": output, "input_vat": inp,
                 "net_vat": r2(output - inp)}
+
+    def tax_liability(self, start, end):
+        """Tax Liability Report: per tax agency and rate, the net amount taxed and the tax."""
+        levy_rate = self.levy_rate
+        rows = []
+        levy_net = r2(self.val("SELECT SUM(l.net) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id "
+                               "WHERE i.kind='sale' AND i.status<>'void' AND l.levy<>0 AND i.date BETWEEN ? AND ?",
+                               (start, end), 0))
+        levy = r2(self.val("SELECT SUM(l.levy) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id "
+                           "WHERE i.kind='sale' AND i.status<>'void' AND i.date BETWEEN ? AND ?", (start, end), 0))
+        rows.append({"agency": "Ministry of Tourism", "name": f"Tourism Levy {levy_rate:g}% (Sales)",
+                     "rate": levy_rate, "net": levy_net, "tax": levy})
+        for r in self.q("SELECT l.vat_rate AS rate, SUM(l.net) AS net, SUM(l.vat) AS vat FROM invoice_lines l "
+                        "JOIN invoices i ON i.id=l.invoice_id WHERE i.kind='sale' AND i.status<>'void' "
+                        "AND i.date BETWEEN ? AND ? GROUP BY l.vat_rate ORDER BY l.vat_rate DESC", (start, end)):
+            rows.append({"agency": "Malawi Revenue Authority" if r["rate"] else "No Tax Agency",
+                         "name": f"VAT {r['rate']:g}% (Sales)" if r["rate"] else "NO TAX SALES",
+                         "rate": r["rate"], "net": r2(r["net"]), "tax": r2(r["vat"])})
+        for r in self.q("SELECT l.vat_rate AS rate, SUM(l.net) AS net, SUM(l.vat) AS vat FROM invoice_lines l "
+                        "JOIN invoices i ON i.id=l.invoice_id WHERE i.kind='bill' AND i.status<>'void' "
+                        "AND i.date BETWEEN ? AND ? GROUP BY l.vat_rate ORDER BY l.vat_rate DESC", (start, end)):
+            rows.append({"agency": "Malawi Revenue Authority" if r["rate"] else "No Tax Agency",
+                         "name": f"VAT {r['rate']:g}% (Purchases)" if r["rate"] else "NO TAX PURCHASE",
+                         "rate": r["rate"], "net": -r2(r["net"]), "tax": -r2(r["vat"])})
+        # expenses paid directly (Spend money): VAT reclaimable and the amounts it was charged on
+        vin = self.account_by_subtype("vat_input")["id"]
+        exp = self.q("SELECT e.id, SUM(CASE WHEN l.account_id=? THEN l.debit-l.credit ELSE 0 END) AS vat, "
+                     "SUM(CASE WHEN l.account_id<>? AND a.type IN ('expense','asset') AND a.subtype NOT IN "
+                     "('bank','cash') THEN l.debit-l.credit ELSE 0 END) AS net FROM journal_entries e "
+                     "JOIN journal_lines l ON l.entry_id=e.id JOIN accounts a ON a.id=l.account_id "
+                     "WHERE e.source_type='expense' AND e.date BETWEEN ? AND ? GROUP BY e.id",
+                     (vin, vin, start, end))
+        with_vat = [x for x in exp if abs(x["vat"] or 0) > EPS]
+        no_vat = [x for x in exp if abs(x["vat"] or 0) <= EPS]
+        if with_vat:
+            rows.append({"agency": "Malawi Revenue Authority", "name": "VAT on expenses (Purchases)", "rate": None,
+                         "net": -r2(sum(x["net"] for x in with_vat)), "tax": -r2(sum(x["vat"] for x in with_vat))})
+        if no_vat:
+            rows.append({"agency": "No Tax Agency", "name": "NO TAX EXPENSES", "rate": 0.0,
+                         "net": -r2(sum(x["net"] for x in no_vat)), "tax": 0.0})
+        out_vat = r2(sum(r["tax"] for r in rows if r["agency"] == "Malawi Revenue Authority" and r["tax"] > 0))
+        in_vat = r2(-sum(r["tax"] for r in rows if r["agency"] == "Malawi Revenue Authority" and r["tax"] < 0))
+        return {"rows": rows, "total_net": r2(sum(r["net"] for r in rows)), "total_tax": r2(sum(r["tax"] for r in rows)),
+                "output_vat": out_vat, "input_vat": in_vat, "vat_payable": r2(out_vat - in_vat), "levy": levy}
+
+    def tourism_return(self, start, end):
+        """Ministry of Tourism - Tax Summary Report (numbered lines as on the lodge's return)."""
+        acc = self.account_by_subtype("tourism_levy")["id"]
+        sales = r2(self.val("SELECT SUM(l.net) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id "
+                            "WHERE i.kind='sale' AND i.status<>'void' AND i.date BETWEEN ? AND ?", (start, end), 0))
+        taxable = r2(self.val("SELECT SUM(l.net) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id "
+                              "WHERE i.kind='sale' AND i.status<>'void' AND l.levy<>0 AND i.date BETWEEN ? AND ?",
+                              (start, end), 0))
+        collected = r2(self.val("SELECT SUM(l.levy) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id "
+                                "WHERE i.kind='sale' AND i.status<>'void' AND i.date BETWEEN ? AND ?", (start, end), 0))
+
+        def moves(types):
+            return r2(self.val(
+                f"SELECT SUM(l.credit-l.debit) FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id "
+                f"WHERE l.account_id=? AND e.date BETWEEN ? AND ? AND e.source_type IN ({','.join('?' * len(types))})",
+                [acc, start, end] + list(types), 0))
+        payments = r2(-moves(["expense", "transfer", "payment"]))
+        other = moves(["manual", "opening"])
+        prev = self.balance(acc, as_of=(date.fromisoformat(start) - timedelta(days=1)).isoformat())
+        owing = r2(collected)
+        current = r2(owing + other)
+        total = r2(current + prev - payments)
+        return {"lines": [(9, "Total sales in period, before tax", sales),
+                          (10, "Total taxable sales in period, before tax", taxable),
+                          (1, "Tax collected on sales", collected),
+                          (11, "Adjustments to tax on sales", 0.0),
+                          (17, "BALANCE OWING FOR PERIOD", owing),
+                          (19, "Other adjustments", other),
+                          (20, "CURRENT BALANCE OWING FOR PERIOD", current),
+                          (21, "Tax due (or credit) from previous periods", prev),
+                          (18, "Tax payments made this period", payments),
+                          (22, "TOTAL AMOUNT DUE", total)],
+                "bold": {17, 20, 22}, "total": total, "rate": self.levy_rate}
+
+    def sales_by_product(self, start, end):
+        """Sales by Product/Service Summary, grouped by department (or 'Not specified')."""
+        total = r2(self.val("SELECT SUM(l.net) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id "
+                            "WHERE i.kind='sale' AND i.status<>'void' AND i.date BETWEEN ? AND ?", (start, end), 0))
+        groups = {}
+        for r in self.q("SELECT COALESCE(d.name,'Not specified') AS grp, COALESCE(it.name, l.description) AS name, "
+                        "SUM(l.qty) AS qty, SUM(l.net) AS amount, SUM(l.qty*COALESCE(l.unit_cost,0)) AS cos "
+                        "FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id LEFT JOIN items it ON "
+                        "it.id=l.item_id LEFT JOIN departments d ON d.id=l.department_id WHERE i.kind='sale' AND "
+                        "i.status<>'void' AND i.date BETWEEN ? AND ? GROUP BY 1, 2 ORDER BY 1, 2",
+                        (start, end)):
+            groups.setdefault(r["grp"], []).append({"name": r["name"], "qty": r["qty"], "amount": r2(r["amount"]),
+                                                    "cos": r2(r["cos"])})
+        return {"groups": groups, "total": total,
+                "qty": sum(x["qty"] for g in groups.values() for x in g),
+                "cos": r2(sum(x["cos"] for g in groups.values() for x in g))}
 
     def tourism_summary(self, start, end):
         """Tourism levy charged on sales, paid to the authorities, and still owed."""
